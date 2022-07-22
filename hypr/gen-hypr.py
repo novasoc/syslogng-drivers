@@ -39,13 +39,14 @@ if args.debug:
 # Capture environment variables for syslog-ng configuration
 confgen_url = sanitize(os.environ.get('confgen_url', ""))
 confgen_bearer_token = sanitize(os.environ.get('confgen_bearer_token', ""))
-confgen_page_size = sanitize(os.environ.get('confgen_page_size',"1000"))
+confgen_page_size = sanitize(os.environ.get('confgen_page_size',"100"))
 confgen_initial_hours = sanitize(os.environ.get('confgen_initial_hours', "4"))
 confgen_sleep = sanitize(os.environ.get('confgen_sleep', "60"))
 confgen_log_level = sanitize(os.environ.get('confgen_log_level', "INFO"))
 confgen_application_skiplist = os.environ.get('confgen_application_skiplist', \
     "HYPRDefaultApplication,HYPRDefaultWorkstationApplication")
 confgen_persist_name = sanitize(os.environ.get('confgen_persist_name', ""))
+confgen_max_performance = sanitize(os.environ.get('confgen_max_performance', "False"))
 
 # Log environment variables
 if args.debug:
@@ -57,6 +58,7 @@ if args.debug:
     debug.write("confgen_log_level : %s\n" %  confgen_log_level)
     debug.write("confgen_application_skiplist : %s\n" %  confgen_application_skiplist)
     debug.write("confgen_persist_name : %s\n" %  confgen_persist_name)
+    debug.write("confgen_max_performance : %s\n" %  confgen_max_performance)
 
 # Deobfuscate
 try:
@@ -110,13 +112,14 @@ for application in applications:
             "page_size","%s"
             "initial_hours","%s"
             "log_level","%s"
+            "max_performance","%s"
         )
         flags(no-parse)
         persist-name(%s-%s)
         fetch-no-data-delay(%s)
     );
 """ % (confgen_url, application, confgen_bearer_token, confgen_page_size, \
-    confgen_initial_hours, confgen_log_level, \
+    confgen_initial_hours, confgen_log_level, confgen_max_performance, \
     confgen_persist_name, application, confgen_sleep)
 
 if args.debug:

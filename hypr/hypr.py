@@ -33,37 +33,47 @@ class Hypr(syslogng.LogFetcher):
         (optional for Python LogFetcher)
         """
 
-        # Standard log format
-        log_format = " - ".join((
-            "Hypr API",
-            "%(levelname)s",
-            "%(message)s"
-        ))
-
-        # Check for valid log level and set loggers
-        if "log_level" in options:
-            if options["log_level"].upper() == "DEBUG":
-                logging.basicConfig(level=logging.DEBUG, format=log_format)
-            elif options["log_level"].upper() == "INFO":
-                logging.basicConfig(level=logging.INFO, format=log_format)
-            elif options["log_level"].upper() == "WARN":
-                logging.basicConfig(level=logging.WARN, format=log_format)
-            elif options["log_level"].upper() == "ERROR":
-                logging.basicConfig(level=logging.ERROR, format=log_format)
-            elif options["log_level"].upper() == "CRIT":
-                logging.basicConfig(level=logging.CRITICAL, format=log_format)
-        else:
-            logging.basicConfig(level=logging.INFO, format=log_format)
-            logging.warning("Invalid or no log level specified, setting log level to INFO")
-
         # Ensure rp_app_id parameter is defined
         if "rp_app_id" in options:
             self.rp_app_id = options["rp_app_id"]
-            logging.info("Starting Hypr API fetch driver for %s", self.rp_app_id)
         else:
             print("Missing rp_app_id configuration option for Hypr driver")
             self.exit = True
             return False
+
+        # Initialize logger for driver
+        self.logger = logging.getLogger('Hypr-' + self.rp_app_id)
+        stream_logger = logging.StreamHandler()
+
+        # Standard log format
+        log_format = " - ".join((
+            "Hypr-%s" % self.rp_app_id,
+            "%(levelname)s",
+            "%(message)s"
+        ))
+
+        # Configure logging for standard log format
+        formatter = logging.Formatter(log_format)
+        stream_logger.setFormatter(formatter)
+        self.logger.addHandler(stream_logger)
+
+        # Check for valid log level and set loggers
+        if "log_level" in options:
+            if options["log_level"].upper() == "DEBUG":
+                self.logger.setLevel(logging.DEBUG)
+            elif options["log_level"].upper() == "INFO":
+                self.logger.setLevel(logging.INFO)
+            elif options["log_level"].upper() == "WARN":
+                self.logger.setLevel(logging.WARNING)
+            elif options["log_level"].upper() == "ERROR":
+                self.logger.setLevel(logging.ERROR)
+            elif options["log_level"].upper() == "CRIT":
+                self.logger.setLevel(logging.CRITICAL)
+        else:
+            self.logger.setLevel(logging.INFO)
+            self.logger.warning("Invalid or no log level specified, setting log level to INFO")
+
+        self.logger.info("Starting Hypr API fetch driver for %s", self.rp_app_id)
 
         # Initialize empty array of log messages
         self.logs = []
@@ -74,29 +84,35 @@ class Hypr(syslogng.LogFetcher):
         # Ensure url parameter is defined
         if "url" in options:
             self.url = options["url"]
-            logging.debug("Initializing Hypr %s syslog-ng driver against URL %s" \
+            self.logger.debug("Initializing Hypr %s syslog-ng driver against URL %s" \
                 , self.rp_app_id, self.url)
         else:
-            logging.error("Missing url configuration option for %s", self.rp_app_id)
+            self.logger.error("Missing url configuration option for %s", self.rp_app_id)
             self.exit = True
             return False
 
         # Ensure bearer_token parameter is defined
         if "bearer_token" in options:
             self.token = options["bearer_token"]
-            logging.debug("Initializing Hypr syslog-ng driver with bearer_token %s for %s", \
+            self.logger.debug("Initializing Hypr syslog-ng driver with bearer_token %s for %s", \
                 self.token, self.rp_app_id)
         else:
-            logging.error("Missing bearer_token configuration option for %s", self.rp_app_id)
+            self.logger.error("Missing bearer_token configuration option for %s", self.rp_app_id)
             self.exit = True
             return False
 
         # Set page size if defined
-        self.page_size = 20
+        self.page_size = 100
         if "page_size" in options:
             self.page_size = options["page_size"]
-            logging.debug("Initializing Hypr syslog-ng driver with pageSize %s for %s" \
+            self.logger.debug("Initializing Hypr syslog-ng driver with pageSize %s for %s" \
                 , self.page_size, self.rp_app_id)
+
+        # Set max_performance if defined
+        self.max_performance = False
+        if "max_performance" in options:
+            if options["max_performance"].lower() == "true":
+                self.max_performance = True
 
         # Default time to go back is 4 hours
         initial_hours = 4
@@ -104,15 +120,15 @@ class Hypr(syslogng.LogFetcher):
 
             # If r is set as an initial_hours value, ignore persistence 
             if "r" in options["initial_hours"]:
-                logging.info("Disabling persistence due to special initial_hours setting (%s)", options["initial_hours"])
+                self.logger.info("Disabling persistence due to special initial_hours setting (%s)", options["initial_hours"])
                 ignore_persistence = True
             # Extract decimal value from initial_hours setting
             try:
                 initial_hours = int(re.search('.*?(\d+).*', options["initial_hours"]).group(1))
             except Exception as ex:
-                logging.error("Invalid value (%s) for initial_hours : %s", options["initial_hours"], ex)
+                self.logger.error("Invalid value (%s) for initial_hours : %s", options["initial_hours"], ex)
 
-            logging.debug("Initializing Hypr syslog-ng driver with initial_hours %i hours ago for %s" \
+            self.logger.debug("Initializing Hypr syslog-ng driver with initial_hours %i hours ago for %s" \
                 , initial_hours, self.rp_app_id)
 
         # Convert initial_hours to milliseconds and subtract from current time
@@ -125,16 +141,16 @@ class Hypr(syslogng.LogFetcher):
             self.persist_name = "hypr-%s-%s" % (self.url, self.rp_app_id)
 
         # Initialize persistence
-        logging.debug("Initializing Hypr syslog-ng driver with persist_name %s", \
+        self.logger.debug("Initializing Hypr syslog-ng driver with persist_name %s", \
                 self.persist_name)
         self.persist = syslogng.Persist(persist_name=self.persist_name, defaults={"last_read": self.start_time})
 
         # Convert persistence timestamp and reset if invalid data is in persistence
         try:
             last_run = datetime.utcfromtimestamp(int(self.persist["last_read"])/1000)
-            logging.debug("Read %s from persistence as last run time", last_run)
+            self.logger.debug("Read %s from persistence as last run time", last_run)
         except:
-            logging.error("Invalid last_read detected in persistence, resetting to %s hours ago", initial_hours)
+            self.logger.error("Invalid last_read detected in persistence, resetting to %s hours ago", initial_hours)
             ignore_persistence = True
 
         # Ignore persistence if configured
@@ -142,7 +158,7 @@ class Hypr(syslogng.LogFetcher):
             # Start search at last fetch window end time
             self.start_time = int(self.persist["last_read"])
 
-        logging.debug("Driver initialization complete, fetch window starts at %i (%s)", \
+        self.logger.debug("Driver initialization complete, fetch window starts at %i (%s)", \
             self.start_time, datetime.utcfromtimestamp(self.start_time/1000))
 
         return True
@@ -157,23 +173,34 @@ class Hypr(syslogng.LogFetcher):
         # Convert python dict to json for message
         msg = syslogng.LogMessage("%s" % json.dumps(log))
 
-        # Try to get program/rpAppId from message
-        if "rpAppId" in log:
-            msg["PROGRAM"] = log['rpAppId']
+        # Do not parse message for higher performance if set
+        if self.max_performance is True:
 
-        # Try to get timestamp information from message
-        if "eventTimeInUTC" in log:
-            try:
-                timestamp = datetime.fromtimestamp(int(log['eventTimeInUTC'] / 1000.0), \
-                    tz=timezone.utc)
-                msg.set_timestamp(timestamp)
+            # Convert python dict to json for message
+            program = "Hypr-" + self.rp_app_id
+            msg["PROGRAM"] = program.replace(" ", "-")
+            return msg
 
-            except Exception as e_all:
-                logging.debug("Unable to convert %s to timestamp from %s : %s", \
-                    log['eventTimeInUTC'], self.rp_app_id, e_all)
+        # Parse everything we can out of the message
+        else:
 
-        # Return LogMessage
-        return msg
+            # Try to get program/rpAppId from message
+            if "rpAppId" in log:
+                msg["PROGRAM"] = log['rpAppId']
+
+            # Try to get timestamp information from message
+            if "eventTimeInUTC" in log:
+                try:
+                    timestamp = datetime.fromtimestamp(int(log['eventTimeInUTC'] / 1000.0), \
+                        tz=timezone.utc)
+                    msg.set_timestamp(timestamp)
+
+                except Exception as e_all:
+                    self.logger.debug("Unable to convert %s to timestamp from %s : %s", \
+                        log['eventTimeInUTC'], self.rp_app_id, e_all)
+
+            # Return LogMessage
+            return msg
 
 
     def fetch(self):
@@ -207,7 +234,7 @@ class Hypr(syslogng.LogFetcher):
 
         # Ingore 504 errors
         if response.status_code == 504:
-            logging.info("Gateway Timeout from Hypr")
+            self.logger.info("Gateway Timeout from Hypr")
             return syslogng.LogFetcher.FETCH_TRY_AGAIN, "Gateway Timeout from Hypr"
 
         # If the API call returns successfully, parse the retrieved json data
@@ -221,7 +248,7 @@ class Hypr(syslogng.LogFetcher):
 
                 # Set internal log buffer to all returned events
                 self.logs = result['data']
-                logging.debug("%i events available from Hypr API %s fetch" \
+                self.logger.debug("%i events available from Hypr API %s fetch" \
                     , total_records, self.rp_app_id)
             except Exception as e_all:
                 return syslogng.LogFetcher.FETCH_ERROR, "%s - %s access failure : %s\n%s", \
@@ -282,7 +309,7 @@ class Hypr(syslogng.LogFetcher):
 
         # If the bearer token is invalid
         if response.status_code == 403:
-            logging.error("Bearer token invalid for %s", self.rp_app_id)
+            self.logger.error("Bearer token invalid for %s", self.rp_app_id)
             return syslogng.LogFetcher.FETCH_ERROR, "Hypr API bearer token expired or invalid - %s", \
                 response.text
 
@@ -296,11 +323,11 @@ class Hypr(syslogng.LogFetcher):
         Retrieve bearer token for Hypr API
         (optional for Python LogFetcher)
         """
-        logging.info("Retreiving bearer token for Hypr API for %s", self.rp_app_id)
+        self.logger.info("Retreiving bearer token for Hypr API for %s", self.rp_app_id)
         try:
             self.bearer_token = base64.b64decode(self.token).decode("utf-8")
         except Exception as e_all:
-            logging.error("Unable to decode bearer_token %s : %s", self.token, e_all)
+            self.logger.error("Unable to decode bearer_token %s : %s", self.token, e_all)
             self.exit = True
             return False
 
@@ -312,6 +339,10 @@ class Hypr(syslogng.LogFetcher):
         Driver de-initialization routine
         (optional for Python LogFetcher)
         """
-        logging.info("Deinitializing with %i %s events in memory buffer", \
-            len(self.logs), self.rp_app_id)
-        self.persist["last_read"] = self.end_time
+
+        # Only update persistence if all logs in memory were processed
+        if len(self.logs) > 0:
+            self.logger.warning("Deinitializing with %i %s events in memory buffer", \
+                len(self.logs), self.rp_app_id)
+        else:
+            self.persist["last_read"] = self.end_time

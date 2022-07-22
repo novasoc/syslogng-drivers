@@ -37,11 +37,12 @@ Additional options can also be specified:
 		  class("hypr.Hypr")
 		  options(
 			  "url","https://<domain>.hypr.com"
-			  "rp_app_id" "<rpAppId>"
-			  "bearer_token" "<base64 encoded bearer token>"
-			  "page_size" "<number of results to return in a single page>"
-			  "initial_hours" "<number of hours to search backward on initial fetch>"
-			  "log_level" "<DEBUG|INFO|WARN|ERROR>"
+			  "rp_app_id","<rpAppId>"
+			  "bearer_token","<base64 encoded bearer token>"
+			  "page_size","<number of results to return in a single page>"
+			  "initial_hours","<number of hours to search backward on initial fetch>"
+			  "log_level","<DEBUG|INFO|WARN|ERROR>"
+              "max_performance","<True|False>"
 			  )
 		  flags(no-parse)
 		  fetch-no-data-delay(<seconds to wait before attempting a fetch after no results are returned>)
@@ -55,11 +56,12 @@ Here are sample values as a reference:
 		  class("hypr.Hypr")
 		  options(
 			  "url","https://my-domain.hypr.com"
-			  "rp_app_id" "WindowsLogin"
-			  "bearer_token" "xxxx"
-			  "page_size" "1000"
-			  "initial_hours" "24"
-			  "log_level" "DEBUG"
+			  "rp_app_id","WindowsLogin"
+			  "bearer_token","xxxx"
+			  "page_size","1000"
+			  "initial_hours","24"
+			  "log_level","DEBUG"
+              "max_performance","False"
 			  )
 		  flags(no-parse)
 		  fetch-no-data-delay(60)
@@ -93,11 +95,12 @@ or with full options:
             url('https://<custom domain>.hypr.com')
             bearer_token('<base64 encoded bearer token>')
             page_size(<number of results to return in a single page>)
-            initial_hours(<number of results to return in a single page>)
+            initial_hours(<number of hours to search backward on initial fetch>)
             persist_name('<unique name>')
             log_level('<DEBUG|INFO|WARN|ERROR>')
             sleep(<seconds to wait before attempting a fetch after no results are returned>)
             application_skip_list('HYPRDefaultApplication,HYPRDefaultWorkstationApplication')
+            max_performance('<True|False>')
         );
     };
     
@@ -113,5 +116,26 @@ As a configured example:
             log_level('debug')
             sleep(60)
             application_skip_list('HYPRDefaultApplication,HYPRDefaultWorkstationApplication')
+            max_performance('False')
         );
     };
+
+### Driver options
+
+url - custom URL for Hypr API access ('https://<custom domain>.hypr.com')
+
+bearer_token - base64 encoded authentication token from Hypr
+
+page_size - number of results to return in a single page (optional - defaults to 100)
+
+initial_hours - number of hours to search backward on initial fetch (optional - defaults to 4)
+
+persist_name - a unique name for this driver (optional - defaults to include rp_app_id)
+
+log_level - the logging level (DEBUG, INFO, WARN, ERROR, or CRIT) to output from syslog-ng (optional - defaults to INFO)
+
+sleep - seconds to wait before attempting a fetch after no results are returned (optional, defaults to 60)
+
+application_skip_list - list of rpAppIds not to retrieve from Hypr (optional - defaults to 'HYPRDefaultApplication,HYPRDefaultWorkstationApplication')
+
+max_performance - Disables json parsing of message for timestamp extraction if True (optional - defaults to False)
