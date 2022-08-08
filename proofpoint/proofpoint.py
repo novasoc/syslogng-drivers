@@ -19,8 +19,8 @@ import base64
 import ssl
 import json
 from datetime import datetime, timedelta
-import pytz
 from time import sleep
+import pytz
 import websocket # websocket is not included in syslog-ng PE currently
 
 from syslogng import LogSource
@@ -30,6 +30,29 @@ class ProofpointOnDemand(LogSource):
     """
     Class for python syslog-ng server-style log source
     """
+
+    def on_close(self, wsapp, close_status_code, close_msg):
+        """
+        Handle websocket being closed by server
+        """
+
+        # Log closing information
+        if close_status_code:
+            self.logger.debug("Websocket closed status code: %s", str(close_status_code))
+            try:
+                if int(close_status_code) == 1000:
+                    self.logger.info("Normal websocket shutdown")
+                else:
+                    self.logger.warning("Websocket error detected on shutdown (status code %s)", str(close_status_code))
+            except Exception as ex:
+                self.logger.warning("Unknown websocket status code (%s) : %s", close_status_code, ex)
+
+        if close_msg:
+            self.logger.debug("Websock closed message: %s", str(close_msg))
+
+        if not close_status_code and not close_msg:
+            self.logger.warning("Websocket shutdown without server feedback")
+
 
     def on_error(self, wsapp, error):
         """
@@ -119,15 +142,23 @@ class ProofpointOnDemand(LogSource):
                     msg.set_timestamp(utc)
                 except ValueError as ve:
                     self.logger.warning(ve)
-        
+
         # Send message up the syslog-ng pipeline
         self.post_message(msg)
+        self.counter = self.counter + 1
 
 
     def init(self, options): # optional
         """
         Initialize Proofpoint on Demand driver
         """
+
+        # Initialize variables
+        self.backfill_start = ""
+        self.end_timestamp = ""
+        self.counter = 0
+        self.backfill_hours = 0
+        self.exit = False
 
         # Set type of event to retrieve from configuration
         if "type" in options:
@@ -196,26 +227,6 @@ class ProofpointOnDemand(LogSource):
             self.logger.error("No cid specified in driver configuration")
             return False
 
-        # Set backoff_time
-        if "backoff_time" in options:
-            try:
-                self.backoff_time = int(options["backoff_time"])
-            except Exception:
-                self.logger.error("backoff_time must be an integer value : %s", options["backoff_time"])
-                self.backoff_time = 10
-        else:
-            self.logger.info("No backoff_time specified in driver configuration, using 10 seconds")
-            self.backoff_time = 10
-
-        # Option to backfill events from X hours ago
-        if "backfill" in options:
-            try:
-                self.backfill = int(options["backfill"])
-            except Exception:
-                self.logger.error("backfill must be an integer value for hours : %s", options["backfill"])
-        else:
-            self.backfill = 0
-
         # Set ssl_verify to false only if specified
         self.ssl_verify = True
         if "ssl_verify" in options:
@@ -230,8 +241,52 @@ class ProofpointOnDemand(LogSource):
                 self.max_performance = True
                 self.logger.info("Disabling performance impacting related message parsing")
 
-        self.exit = False
+        # Set backoff_time
+        if "backoff_time" in options:
+            try:
+                self.backoff_time = int(options["backoff_time"])
+            except Exception:
+                self.logger.error("backoff_time must be an integer value : %s", options["backoff_time"])
+                self.backoff_time = 10
+        else:
+            self.logger.info("No backoff_time specified in driver configuration, using 10 seconds")
+            self.backoff_time = 10
+
+        # Option to retrieve events from backfill_hours hours ago
+        if "backfill_hours" in options:
+            try:
+                self.backfill_hours = int(options["backfill_hours"])
+            except Exception:
+                self.logger.error("backfill_hours must be an integer value for hours : %s", options["backfill_hours"])
+
+        # Option to retrieve events starting from backfill_start
+        if "backfill_start" in options:
+            try:
+                # Make sure this is a valid datetime format
+                backfill_start = datetime.strptime(options["backfill_start"], "%Y-%m-%dT%H:%M:%S-0000")
+                self.backfill_start = options["backfill_start"]
+
+                # Get start time + backfill_hours hours for end of search window
+                if self.backfill_hours > 0:
+                    delta = timedelta(hours = self.backfill_hours)
+                    end_time = backfill_start + delta
+
+                    # Convert to Proofpoint allowed format
+                    self.end_timestamp = end_time.strftime("%Y-%m-%dT%H:%M:%S") + "-0000"
+
+                # If no end time is set with backfill_hours, the driver will receive a significant number
+                # of duplicate events from Proofpoint when it switches back to realtime mode
+                else:
+                    self.logger.warning("backfill_start specified without backfill_hours, expect duplicate events from Proofpoint")
+
+            # Do not startup if we have an invalid start date as this can unleash havoc
+            except Exception as ex:
+                self.logger.critical("Invalid backfill_start (%s) - should be in UTC YYYY-MM-DDTHH:MM:SS-0000", options["backfill_start"])
+                self.logger.info("Shutting down driver due to invalid backfill_start configuration : %s", ex)
+                self.request_exit()
+
         return True
+
 
     def run(self): # mandatory
         """
@@ -239,7 +294,9 @@ class ProofpointOnDemand(LogSource):
         """
 
         # Keep looping until we need to exit
-        self.logger.info("Pulling logs from Proofpoint on Demand API for %s", self.cid)
+        if not self.exit:
+            self.logger.info("Pulling logs from Proofpoint on Demand API for %s", self.cid)
+
         while not self.exit:
 
             # Headers needed by Proofpoint
@@ -250,45 +307,76 @@ class ProofpointOnDemand(LogSource):
                 self.logger.debug("Turning on trace logging for websocket")
                 websocket.enableTrace(True)
 
-            # Add sinceTime if backfill is set
-            if self.backfill > 0:
+            # If we already have a start and end timestamp
+            if self.backfill_start and self.end_timestamp:
+                self.logger.info("Start fetch window at %s", self.backfill_start)
+                self.logger.info("End fetch window at %s", self.end_timestamp)
+                wss_url = "wss://logstream.proofpoint.com:443/v1/stream?cid=%s&type=%s&sinceTime=%s&toTime=%s" \
+                    % (self.cid, self.type, self.backfill_start, self.end_timestamp)
 
-                # Get current time - backfill hours
+            # If we only have a starting timestamp
+            elif self.backfill_start:
+                self.logger.info("Start fetch window at %s", self.backfill_start)
+                wss_url = "wss://logstream.proofpoint.com:443/v1/stream?cid=%s&type=%s&sinceTime=%s" % (self.cid, self.type, self.backfill_start)
+
+            # Create a sinceTime if backfill_hours is set
+            elif self.backfill_hours > 0:
+
+                # Get current time - backfill_hours hours
                 now = datetime.utcnow()
-                delta = timedelta(hours = self.backfill)
+                delta = timedelta(hours = self.backfill_hours)
                 start_time = now - delta
 
                 # Convert to Proofpoint allowed format
-                start_timestamp = start_time.strftime("%Y-%m-%dT%H:%M:%S") + "-0000"
-                self.logger.info("Starting fetch window at %s", start_timestamp)
+                self.backfill_start = start_time.strftime("%Y-%m-%dT%H:%M:%S") + "-0000"
+                self.logger.info("Start fetch window at %s", self.backfill_start)
 
                 # Websocket URL for back in time
-                wss_url = "wss://logstream.proofpoint.com:443/v1/stream?cid=%s&type=%s&sinceTime=%s" % (self.cid, self.type, start_timestamp)
+                wss_url = "wss://logstream.proofpoint.com:443/v1/stream?cid=%s&type=%s&sinceTime=%s" % (self.cid, self.type, self.backfill_start)
             else:
                 # Websocket URL for current stream
+                self.logger.info("Start fetch at current time")
                 wss_url = "wss://logstream.proofpoint.com:443/v1/stream?cid=%s&type=%s" % (self.cid, self.type)
 
             # Create websocket with given parameters and handlers
-            websocket.setdefaulttimeout(5)
+            websocket.setdefaulttimeout(30)
             self.wsapp = websocket.WebSocketApp(
                 wss_url,
                 header=headers,
                 on_error=self.on_error,
+                on_close=self.on_close,
                 on_message=self.on_message)
 
             # Run without SSL certificate verification if set
             if self.ssl_verify is False:
-                self.wsapp.run_forever(sslopt={"cert_reqs": ssl.CERT_NONE}, ping_interval=10)
+                self.wsapp.run_forever(sslopt={"cert_reqs": ssl.CERT_NONE}, ping_interval=10, skip_utf8_validation=True)
             else:
-                self.wsapp.run_forever(ping_interval=10)
+                self.wsapp.run_forever(ping_interval=10, skip_utf8_validation=True)
+
+            # Proofpoint will sometimes fail to return results but doesn't throw an error
+            if self.counter == 0:
+                self.logger.error("Websocket connection closed but no events were returned")
+            else:
+                self.logger.info("Websocket closed after %i events returned", self.counter)
+
+            # Reset counter
+            self.counter = 0
+
+            # If a start and end were set for the fetch, exit after completion
+            if self.backfill_start and self.end_timestamp and self.exit is False:
+                self.logger.info("All events between %s and %s have been retreived", self.backfill_start, self.end_timestamp)
+                self.request_exit()
+
+            # If this was a backfill_hours search, make sure we start new searches at current time
+            elif self.backfill_hours > 0 and self.exit is False:
+                self.logger.info("Completed pulling logs starting from %s", self.backfill_start)
+                self.backfill_hours = 0
+                self.backfill_start = ""
+                self.end_timestamp = ""
 
             # Should only be here if something breaks or we specified a sinceTime
             if self.exit is False:
-                self.logger.info("Websocket connection lost, event duplication may be possible")
-
-            # If this was a backfill search, make sure we don't start new searches at current time
-            if self.backfill > 0:
-                self.backfill = 0
+                self.logger.info("Websocket connection lost, event duplication is likely")
 
 
     def request_exit(self): # mandatory
@@ -298,7 +386,9 @@ class ProofpointOnDemand(LogSource):
 
         self.logger.info("Shutting down Proofpoint on Demand driver")
         self.exit = True
-        self.wsapp.keep_running = False
-        self.wsapp.close()
+        try:
+            self.wsapp.keep_running = False
+            self.wsapp.close()
+        except Exception as ex:
+            self.logger.warning(ex)
         self.logger.info("Shutdown complete")
-        exit(0)
