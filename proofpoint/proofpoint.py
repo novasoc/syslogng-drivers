@@ -22,11 +22,9 @@ from datetime import datetime, timedelta
 from time import sleep
 import pytz
 import websocket # websocket is not included in syslog-ng PE currently
+import syslogng
 
-from syslogng import LogSource
-from syslogng import LogMessage
-
-class ProofpointOnDemand(LogSource):
+class ProofpointOnDemand(syslogng.LogSource):
     """
     Class for python syslog-ng server-style log source
     """
@@ -38,10 +36,9 @@ class ProofpointOnDemand(LogSource):
 
         # Log closing information
         if close_status_code:
-            self.logger.debug("Websocket closed status code: %s", str(close_status_code))
             try:
                 if int(close_status_code) == 1000:
-                    self.logger.info("Normal websocket shutdown")
+                    self.logger.debug("Normal websocket shutdown")
                 else:
                     self.logger.warning("Websocket error detected on shutdown (status code %s)", str(close_status_code))
             except Exception as ex:
@@ -58,6 +55,9 @@ class ProofpointOnDemand(LogSource):
         """
         Error handling for websocket
         """
+        if self.exit:
+            self.logger.debug("Websocket closed for shutdown")
+            return True
 
         # If the error has a status code, output common reasons
         try:
@@ -68,6 +68,7 @@ class ProofpointOnDemand(LogSource):
     - missing or empty clusterID
     - missing or empty message type
     - invalid sinceTime or toTime (if present)""")
+                self.logger.info("URL request was : %s", self.wss_url)
                 self.request_exit()
             elif error.status_code == 401:
                 self.logger.error("Unauthorized : %s", error)
@@ -84,6 +85,7 @@ class ProofpointOnDemand(LogSource):
                 self.logger.info("""Possible causes:
     - Invalid URL
     - Invalid protocol (for example, http/https are not supported""")
+                self.logger.info("URL request was : %s", self.wss_url)
                 self.request_exit()
             elif error.status_code == 405:
                 self.logger.error("Method not allowed : %s", error)
@@ -100,7 +102,10 @@ class ProofpointOnDemand(LogSource):
                 self.logger.error("Unknown error in websocket : %s", error)
 
         except BrokenPipeError as BPE:
-            self.logger.error("Broken websocket pipe detected : %s", BPE)
+            self.logger.warning("Broken websocket pipe detected : %s", BPE)
+
+        except ConnectionResetError:
+            self.logger.info("Websocket connection reset by peer (Proofpoint)")
 
         # Catch all for unknown error type
         except Exception as ex:
@@ -118,7 +123,7 @@ class ProofpointOnDemand(LogSource):
             message = message.decode("utf-8")
 
         # Create syslog-ng LogMessage
-        msg = LogMessage(message)
+        msg = syslogng.LogMessage(message)
 
         # Set PROGRAM field
         msg["PROGRAM"] = "Proofpoint-" + self.type
@@ -241,6 +246,50 @@ class ProofpointOnDemand(LogSource):
                 self.max_performance = True
                 self.logger.info("Disabling performance impacting related message parsing")
 
+        # Set hourly_fetch to True only if specified
+        self.hourly_fetch = False
+        if "hourly_fetch" in options:
+            if options["hourly_fetch"].lower() == "true":
+                self.hourly_fetch = True
+                self.logger.info("Fetching logs every hour instead of in realtime")
+
+        # Setup persist_name with defined persist_name or use proofpoint and the type if none specified
+        try:
+            self.persist_name
+        except:
+            self.persist_name = "proofpoint-%s-%s" % (self.type, self.cid)
+
+        # Initialize last_run
+        self.last_run = ""
+
+        # Initialize persistence
+        self.logger.debug("Initializing Proofpoint on Demand syslog-ng driver with persist_name %s", \
+                self.persist_name)
+        self.persist = syslogng.Persist(persist_name=self.persist_name, defaults={"last_run": self.last_run})
+
+        # Check for last run or empty sync_token
+        try:
+            self.last_run = self.persist["last_run"]
+            self.logger.debug("Previous last_run from persistence is %s", self.last_run)
+            # If last_run isn't empty
+            if len(self.last_run) > 10:
+                try:
+                    # Parse last_run into datetime object
+                    self.last_run = datetime.strptime(self.last_run, "%Y-%m-%dT%H:%M:%S-0000")
+                    # Round down to hour boundary for PoD API
+                    self.last_run = self.last_run.replace(microsecond=0, second=0, minute=0)
+                    self.logger.debug("Rounding down to %s for start window", self.last_run)
+                except Exception as ex:
+                    self.logger.warning("Invalid last_run in persistence (%s), ignoring it : %s", self.last_run, ex)
+                    self.last_run = datetime.utcnow().replace(microsecond=0, second=0, minute=0)
+            # Start with rounded down hour otherwise
+            else:
+                self.last_run = datetime.utcnow().replace(microsecond=0, second=0, minute=0)
+
+        except Exception as ex:
+            self.logger.warning("Invalid last_run in persistence, ignoring it : %s", ex)
+            self.last_run = datetime.utcnow().replace(microsecond=0, second=0, minute=0)
+
         # Set backoff_time
         if "backoff_time" in options:
             try:
@@ -281,7 +330,8 @@ class ProofpointOnDemand(LogSource):
 
             # Do not startup if we have an invalid start date as this can unleash havoc
             except Exception as ex:
-                self.logger.critical("Invalid backfill_start (%s) - should be in UTC YYYY-MM-DDTHH:MM:SS-0000", options["backfill_start"])
+                self.logger.critical("Invalid backfill_start (%s) - should be in UTC YYYY-MM-DDTHH:MM:SS-0000", \
+                    options["backfill_start"])
                 self.logger.info("Shutting down driver due to invalid backfill_start configuration : %s", ex)
                 self.request_exit()
 
@@ -293,31 +343,56 @@ class ProofpointOnDemand(LogSource):
         Main loop to retrieve events from websock for Proofpoint on Demand
         """
 
-        # Keep looping until we need to exit
+        # First run
         if not self.exit:
             self.logger.info("Pulling logs from Proofpoint on Demand API for %s", self.cid)
 
+        # Initialize next_run for next loop
+        if self.hourly_fetch:
+            self.next_run = self.last_run + timedelta(hours=1)
+
+        # Keep looping until we need to exit
         while not self.exit:
+
+            # Hourly fetch condition
+            if self.hourly_fetch:
+                # Sleep until it's time to fetch another hour of logs
+                while datetime.utcnow() < self.next_run and not self.exit:
+                    sleep(5)
+
+                # Break out immediately for self.exit if we were in a sleep loop
+                if self.exit:
+                    break
+
+                # Set start and end times for fetch window
+                self.logger.debug("Previous run was at %s and running again as it's after %s (%s)", \
+                    self.last_run, self.next_run, datetime.utcnow())
+                self.backfill_start = self.last_run.strftime("%Y-%m-%dT%H:%M:%S") + "-0000"
+                self.end_timestamp = self.next_run.strftime("%Y-%m-%dT%H:%M:%S") + "-0000"
+
+            # Break out immediately for self.exit if we were in a sleep loop
+            if self.exit:
+                break
 
             # Headers needed by Proofpoint
             headers={"Host":"logstream.proofpoint.com:443","Authorization":"Bearer %s" % self.token}
 
             # Turn on additional debugging if set
-            if logging.DEBUG >= self.logger.getEffectiveLevel():
-                self.logger.debug("Turning on trace logging for websocket")
-                websocket.enableTrace(True)
+            #if logging.DEBUG >= self.logger.getEffectiveLevel():
+            #    self.logger.debug("Turning on trace logging for websocket")
+            #    websocket.enableTrace(True)
 
             # If we already have a start and end timestamp
             if self.backfill_start and self.end_timestamp:
-                self.logger.info("Start fetch window at %s", self.backfill_start)
-                self.logger.info("End fetch window at %s", self.end_timestamp)
-                wss_url = "wss://logstream.proofpoint.com:443/v1/stream?cid=%s&type=%s&sinceTime=%s&toTime=%s" \
+                self.logger.debug("Fetching only events from %s to %s", self.backfill_start, self.end_timestamp)
+                self.wss_url = "wss://logstream.proofpoint.com:443/v1/stream?cid=%s&type=%s&sinceTime=%s&toTime=%s" \
                     % (self.cid, self.type, self.backfill_start, self.end_timestamp)
 
             # If we only have a starting timestamp
             elif self.backfill_start:
-                self.logger.info("Start fetch window at %s", self.backfill_start)
-                wss_url = "wss://logstream.proofpoint.com:443/v1/stream?cid=%s&type=%s&sinceTime=%s" % (self.cid, self.type, self.backfill_start)
+                self.logger.info("Starting fetch window from %s", self.backfill_start)
+                self.wss_url = "wss://logstream.proofpoint.com:443/v1/stream?cid=%s&type=%s&sinceTime=%s" \
+                    % (self.cid, self.type, self.backfill_start)
 
             # Create a sinceTime if backfill_hours is set
             elif self.backfill_hours > 0:
@@ -329,19 +404,20 @@ class ProofpointOnDemand(LogSource):
 
                 # Convert to Proofpoint allowed format
                 self.backfill_start = start_time.strftime("%Y-%m-%dT%H:%M:%S") + "-0000"
-                self.logger.info("Start fetch window at %s", self.backfill_start)
+                self.logger.info("Starting fetch window from %s", self.backfill_start)
 
                 # Websocket URL for back in time
-                wss_url = "wss://logstream.proofpoint.com:443/v1/stream?cid=%s&type=%s&sinceTime=%s" % (self.cid, self.type, self.backfill_start)
+                self.wss_url = "wss://logstream.proofpoint.com:443/v1/stream?cid=%s&type=%s&sinceTime=%s" \
+                    % (self.cid, self.type, self.backfill_start)
             else:
                 # Websocket URL for current stream
-                self.logger.info("Start fetch at current time")
-                wss_url = "wss://logstream.proofpoint.com:443/v1/stream?cid=%s&type=%s" % (self.cid, self.type)
+                self.logger.info("Starting realtime log fetch at current time")
+                self.wss_url = "wss://logstream.proofpoint.com:443/v1/stream?cid=%s&type=%s" % (self.cid, self.type)
 
             # Create websocket with given parameters and handlers
             websocket.setdefaulttimeout(30)
             self.wsapp = websocket.WebSocketApp(
-                wss_url,
+                self.wss_url,
                 header=headers,
                 on_error=self.on_error,
                 on_close=self.on_close,
@@ -355,17 +431,26 @@ class ProofpointOnDemand(LogSource):
 
             # Proofpoint will sometimes fail to return results but doesn't throw an error
             if self.counter == 0:
-                self.logger.error("Websocket connection closed but no events were returned")
+                self.logger.warning("Websocket connection closed but no events were returned")
             else:
-                self.logger.info("Websocket closed after %i events returned", self.counter)
+                if self.backfill_start and self.end_timestamp and self.exit is False:
+                    self.logger.info("Websocket closed after %i events returned (%s to %s)", \
+                        self.counter, self.backfill_start, self.end_timestamp)
+                else:
+                    self.logger.info("Websocket closed after %i events returned", self.counter)
 
             # Reset counter
             self.counter = 0
 
             # If a start and end were set for the fetch, exit after completion
             if self.backfill_start and self.end_timestamp and self.exit is False:
-                self.logger.info("All events between %s and %s have been retreived", self.backfill_start, self.end_timestamp)
-                self.request_exit()
+                # Shutdown driver if this isn't an hourly fetch
+                if not self.hourly_fetch:
+                    self.request_exit()
+                # Update next_run for next loop of hourly_fetch
+                else:
+                    self.last_run = self.next_run
+                    self.next_run = self.last_run + timedelta(hours=1)
 
             # If this was a backfill_hours search, make sure we start new searches at current time
             elif self.backfill_hours > 0 and self.exit is False:
@@ -375,8 +460,13 @@ class ProofpointOnDemand(LogSource):
                 self.end_timestamp = ""
 
             # Should only be here if something breaks or we specified a sinceTime
-            if self.exit is False:
-                self.logger.info("Websocket connection lost, event duplication is likely")
+            if self.exit is False and not self.backfill_start:
+                self.logger.warning("Websocket connection lost, event duplication is likely")
+
+        # Flush last run time to persistence
+        end_stamp = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S-0000")
+        self.logger.debug("Finished wss pull, setting persistence for last_run to %s", end_stamp)
+        self.persist["last_run"] = end_stamp
 
 
     def request_exit(self): # mandatory
@@ -385,10 +475,19 @@ class ProofpointOnDemand(LogSource):
         """
 
         self.logger.info("Shutting down Proofpoint on Demand driver")
+
+        # Flush last run time to persistence
+        end_stamp = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S-0000")
+        self.logger.debug("Setting persistence for last_run to %s", end_stamp)
+        self.persist["last_run"] = end_stamp
+
         self.exit = True
         try:
             self.wsapp.keep_running = False
             self.wsapp.close()
+        # wsapp has already been released
+        except AttributeError:
+            pass
         except Exception as ex:
             self.logger.warning(ex)
         self.logger.info("Shutdown complete")

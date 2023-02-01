@@ -58,6 +58,7 @@ Additional options can also be specified:
 			    "max_performance","<true|false>" # optional - defaults to false
 			    "backfill_hours","<number of hours back to retrieve events for>" # optional - defaults to 0
 			    "backfill_start","<ISO 8601 timestamp in UTC for start of fetch window>" # optional
+			    "hourly_fetch","<true|false>" # optional - fetches events every hour from PoD instead of realtime
 			    )
 		    flags(no-parse)
 		    persist-name(<unique name for driver>)
@@ -79,6 +80,7 @@ Here are sample values as a reference:
 			    "max_performance","false" # optional - defaults to false
 			    "backfill_hours","24" # optional - defaults to 0
 			    "backfill_start","2022-08-01T15:45:59-0000" # optional
+			    "hourly_fetch","false" # optional - defaults to false
 			    )
 		    flags(no-parse)
 		    persist-name(s_proofpoint_message)
@@ -105,6 +107,7 @@ backfill_hours - Retrieve events from the past backfill hours before now (or aft
 
 backfill_start - An ISO 8601 formatted timestamp **in UTC** for when to start fetching logs. If backfill_start is specified and backfill_hours is not, the driver will fetch all logs from backfill_start to now and then fetch current logs (indefinitely). If backfill_start is specified and backfill_hours is specified, the driver will fetch all logs from backfill_start to backfill_start + backfill_hours **and then exit**. The timestamp format must be in the form of %Y-%m-%dT%H:%M:%S-0000 where **-0000** is required (only UTC timestamps are supported).
 
+hourly_fetch - The Proofpoint on Demand API can return inconsistent results when fetching events in realtime through the websocket. By fetching events in 1 hour blocks at an hour offset (per API requirements), a consistent number of events are returned (at the expense of only being able to retrieve events in 1 hour blocks and events being up to 1 hour old when fetched)
 
 ### Proofpoint-on-Demand API Limitations
 
