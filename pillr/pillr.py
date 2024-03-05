@@ -166,6 +166,7 @@ Please disregard this message
                     pattern = parser.get(configuration, "pattern")
                     recipient = parser.get(configuration, "recipient")
                     template = parser.get(configuration, "template")
+                    keys = parser.get(configuration, "keys")
                     user = parser.get(configuration, 'user', fallback=False)
                     computer = parser.get(configuration, "computer", fallback=False)
                     log_sources = parser.get(configuration, "log_sources", fallback=False)
@@ -180,6 +181,7 @@ Please disregard this message
                     alert['name'] = configuration
                     alert['recipient'] = recipient
                     alert['pattern'] = pattern
+                    alert['keys'] = keys
                     alert['template'] = template
                     alert['high_threshold'] = high_threshold
                     alert['time_span'] = time_span
@@ -331,8 +333,10 @@ Please disregard this message
                 # Convert to unix timestamp from datetime
                 timestamp = int(metadata['alert_date'].timestamp())
               
-                # Unique key for deduping alerts
-                key = metadata['user'] + "" + metadata['computer'] + "-" + metadata['log_sources']
+                # Build unique key for deduping alerts from keys fields
+                key = ""
+                for value in alert['keys'].split(','):
+                    key = key + metadata[value] + "-"
 
                 # If this type of event has never occured
                 if alert['name'] not in self.events:

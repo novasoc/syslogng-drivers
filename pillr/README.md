@@ -161,10 +161,11 @@ mail_test_recipient - To validate email configuration, a test message will be se
 
 The file specified for the alerts_ini configuration includes a number of options and can have multiple stanzas. These include:
 
-name - Each configuration must have a unique name
-pattern - The regex to be used against a log message to check if it matches this configuration
-recipient - The email recipient when an alert is triggered
-template - The email template to be used when an alert is triggered including variable substitutions
+name - Each configuration must have a unique name (mandatory)
+pattern - The regex to be used against a log message to check if it matches this configuration (mandatory)
+recipient - The email recipient when an alert is triggered (mandatory)
+keys - A comma separated list of extracted variable(s) that are used to uniquely identify an event for dedup purposes
+template - The email template to be used when an alert is triggered including variable substitutions (mandatory)
 high_threshold - The number of events at which an alert should be triggered (default is 1)
 time_span - The amount of time over which high_threshold events can occur before an alert is triggered in seconds (default is 60)
 reset_time - The amount of time before or after the start or end of an alert before a new alert can be sent
@@ -185,6 +186,7 @@ Referece configuration stanzas (of which there can be multiple in the alerts_ini
     User=Account\s+That\s+Was\s+Locked\s+Out:\s+.*?Account\s+Name:\s+(.+?)\s+Additional
     Computer=Caller\s+Computer\s+Name:\s+[\\]*(.+?)\s+
     Log_Sources=Success\s+Audit\s+(.+?)\s+
+    Keys=user,computer,log_sources
     High_Threshold=1
     Time_Span=60
     Reset_Time=60
@@ -209,6 +211,7 @@ Referece configuration stanzas (of which there can be multiple in the alerts_ini
     Pattern=interface\s+\w+\s+down
     Recipient=netops@company.com
     custom_field=interface\s+(\w+)\s+down
+    Keys=SOURCEIP,custom_field
     High_Threshold=1
     Time_Span=60
     Reset_Time=60
