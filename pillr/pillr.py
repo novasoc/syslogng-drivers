@@ -298,9 +298,26 @@ Please disregard this message
                 except:
                     metadata['custom_field'] = "N/A"
 
+                # Set metadata for syslog-ng available macros
+                metadata['LOGHOST'] = log_message['LOGHOST']
+                metadata['SOURCEIP'] = log_message['SOURCEIP']
+                metadata['FULLHOST'] = log_message['FULLHOST']
+                metadata['FULLHOST_FROM'] = log_message['FULLHOST_FROM']
+
+                # Cleanup metadata fields
+                if isinstance(metadata['LOGHOST'], bytes):
+                    metadata['LOGHOST'] = metadata['LOGHOST'].decode("utf-8")
+                if isinstance(metadata['SOURCEIP'], bytes):
+                    metadata['SOURCEIP'] = metadata['SOURCEIP'].decode("utf-8")
+                if isinstance(metadata['LOGHOST'], bytes):
+                    metadata['FULLHOST'] = metadata['FULLHOST'].decode("utf-8")
+                if isinstance(metadata['FULLHOST_FROM'], bytes):
+                    metadata['FULLHOST_FROM'] = metadata['FULLHOST_FROM'].decode("utf-8")
+
+
                 # Extract timestamp from event if available and set
-                if not alert['timestamp_regex'] or not alert['timestamp_format']:
-                    metadata['alert_date'] = syslog_timestamp
+                if 'timestamp_regex' not in alert or 'timestamp_format' not in alert:
+                    metadata['alert_date'] = datetime.datetime.strptime(syslog_timestamp, "%Y-%m-%dT%H:%M:%S%z")
 
                 # Convert timestamp string to datetime if possible
                 else:
@@ -339,10 +356,10 @@ Please disregard this message
                 # If we this is an alertable event
                 if alertable:
                     message, temp_event = self.gen_alert(\
-                            new_alert=alert, 
-                            new_event=self.events[alert['name']][key], 
-                            new_metadata=metadata, 
-                            new_timestamp=timestamp, 
+                            new_alert=alert,
+                            new_event=self.events[alert['name']][key],
+                            new_metadata=metadata,
+                            new_timestamp=timestamp,
                             new_log=message)
 
                     # Send email alert
@@ -455,6 +472,10 @@ Please disregard this message
         message = message.replace('$TIME_SPAN', str(new_alert['time_span']))
         message = message.replace('$RESET_TIME', str(new_alert['reset_time']))
         message = message.replace('$NUM_EVENTS', str(new_event['num_events']))
+        message = message.replace('$LOGHOST', str(new_metadata['LOGHOST']))
+        message = message.replace('$SOURCEIP', str(new_metadata['SOURCEIP']))
+        message = message.replace('$FULLHOST', str(new_metadata['FULLHOST']))
+        message = message.replace('$FULLHOST_FROM', str(new_metadata['FULLHOST_FROM']))
         message = message.replace('$LOG', new_log)
 
         # Reset event counter
@@ -501,7 +522,7 @@ Please disregard this message
                 server = smtplib.SMTP(self.smtp_server, self.port)
 
                 # If a username and password have been supplied
-                if len(self.sender) > 0 and len(self.password) > 0:
+                if self.password and len(self.sender) > 0:
                     # Authenticate in cleartext
                     server.login(self.sender, self.password)
                 server.sendmail(from_addr=self.sender, to_addrs=recipient, msg=message)

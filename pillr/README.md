@@ -175,7 +175,7 @@ computer - The regex to use for extracting a computer name from an event (option
 log_sources - The regex to user for extracting the log sources from an event (optional)
 custom_field - The regex to user for extracting a custom field from an event (optional)
 
-A referece complete configuration stanza (of which there can be multiple in the alerts_ini file):
+Referece configuration stanzas (of which there can be multiple in the alerts_ini file):
 
     [WindowsLockout]
     Pattern=4740 Microsoft-Windows-Security-Auditing
@@ -190,7 +190,7 @@ A referece complete configuration stanza (of which there can be multiple in the 
     Reset_Time=60
     Template=From: logalerts@company.com
         To: $RECIPIENT
-        Subject: Account Lockout Alert
+        Subject: Account Lockout Alert from $SOURCEIP
     
         Name: Search-Filter AcctLockout
         Alert=Windows Lockout
@@ -203,3 +203,37 @@ A referece complete configuration stanza (of which there can be multiple in the 
         High threshold: $HIGH_THRESHOLD matches within $TIME_SPAN seconds.
         Subsequent alerts will not be sent until $RESET_TIME seconds have passed. There were $NUM_EVENTS alertable events since last alert message.
         Alert Recipients=$RECIPIENT
+
+
+    [InterfaceDown]
+    Pattern=interface\s+\w+\s+down
+    Recipient=netops@company.com
+    custom_field=interface\s+(\w+)\s+down
+    High_Threshold=1
+    Time_Span=60
+    Reset_Time=60
+    Template=From: logalerts@company.com
+        To: $RECIPIENT
+        Subject: Interface $CUSTOM_FIELD down on $SOURCEIP
+    
+        Detected pattern $PATTERN
+        Log=$LOG
+
+In the email template configuration, the following substitutions are available which will replace the variable before sending the message:
+
+    $LOGHOST - The hostname of the computer running syslog-ng PE — it returns the same result as the hostname command.
+    $SOURCEIP - IP address of the host that sent the message to syslog-ng. (That is, the IP address of the host in the ${FULLHOST_FROM} macro.) Please note that when a message traverses several relays, this macro contains the IP of the last relay.
+    $FULLHOST - The name of the source host where the message originates from.
+    $FULLHOST_FROM - The FQDN of the host that sent the message to syslog-ng as resolved by syslog-ng using DNS. If the message traverses several hosts, this is the last host in the chain.
+    $RECIPIENT - Value of recipient in alerts_ini configuration for this alert
+    $PATTERN - Value of pattern in alerts_ini configuration for this alert
+    $LOG_SOURCES - Value of regex contents matching log_sources in alerts_ini configuration for this alert
+    $USER - Value of regex contents matching user in alerts_ini configuration for this alert
+    $COMPUTER - Value of regex contents matching computer in alerts_ini configuration for this alert
+    $CUSTOM_FIELD - Value of regex contents matching custom_field in alerts_ini configuration for this alert
+    $ALERT_TIME - Either the timestamp within the message (as extracted and parsed from timestamp and timestamp_format in alerts_init) or time the event was received
+    $HIGH_THRESHOLD - Value of high_threshold in alerts_ini configuration for this alert
+    $TIME_SPAN - Value of time_span in alerts_ini configuration for this alert
+    $RESET_TIME - Value of reset_time in alerts_ini configuration for this alert
+    $NUM_EVENTS - Number of matching events within alert window
+    $LOG - The MESSAGE field of the log message
