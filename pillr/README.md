@@ -162,7 +162,7 @@ mail_test_recipient - To validate email configuration, a test message will be se
 The file specified for the alerts_ini configuration includes a number of options and can have multiple stanzas. These include:
 
 name - Each configuration must have a unique name (mandatory)
-pattern - The regex to be used against a log message to check if it matches this configuration (mandatory)
+pattern - The regex to be used against a log message to check if it matches this configuration. Whitespace is interpreted as a logical AND for the regex (mandatory)
 recipient - The email recipient when an alert is triggered (mandatory)
 keys - A comma separated list of extracted variable(s) that are used to uniquely identify an event for dedup purposes
 template - The email template to be used when an alert is triggered including variable substitutions (mandatory)

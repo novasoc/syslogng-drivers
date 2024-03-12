@@ -177,6 +177,17 @@ Please disregard this message
                     timestamp_format = parser.get(configuration, "timestamp_format", fallback=False)
                     custom_field = parser.get(configuration, "custom_field", fallback=False)
 
+                    # Convert the pattern regex to a logical AND search expression if whitespace is present
+                    if re.search(" ", pattern):
+                        # Split pattern by whitespace
+                        logical_pattern = ""
+                        for substring in pattern.split(" "):
+                            # Use lookaheads for matching each substring
+                            logical_pattern = logical_pattern + "(?=.*" + substring + ")"
+                        # Match remainder of log
+                        pattern = logical_pattern + ".*"
+                        self.logger.debug("Converted search expression %s to %s", parser.get(configuration, "pattern"), pattern)
+
                     # Store configuration parameters for this alert
                     alert['name'] = configuration
                     alert['recipient'] = recipient
