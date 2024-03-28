@@ -19,6 +19,7 @@ import smtplib
 import ssl
 import pickle
 import os
+from dateutil import parser
 import syslogng
 
 class DedupAlerts(object):
@@ -264,6 +265,27 @@ Please disregard this message
             self.logger.info("No configuration for %s, event state discarded", self.state_db)
 
 
+    def tzconvert(self, timestamp):
+        """
+        Convert timezone string values to UTC offsets for reliable parsing
+        """
+
+        try:
+            timestamp = re.sub(r'EST-DST', '-0400', timestamp)
+            timestamp = re.sub(r'EST', '-0500', timestamp)
+            timestamp = re.sub(r'EDT', '-0400', timestamp)
+            timestamp = re.sub(r'CST-DST', '-0500', timestamp)
+            timestamp = re.sub(r'CST', '-0600', timestamp)
+            timestamp = re.sub(r'CDT', '-0500', timestamp)
+            timestamp = re.sub(r'MST', '-0700', timestamp)
+            timestamp = re.sub(r'MDT', '-0600', timestamp)
+            timestamp = re.sub(r'PST', '-0800', timestamp)
+            timestamp = re.sub(r'PDT', '-0700', timestamp)
+            timestamp = re.sub(r'UTC', '-0000', timestamp)
+        except Exception as ex:
+            self.logger.warning("Error substituting timezone in %s : %s", timestamp, ex)
+        return timestamp
+
     def send(self,log_message):
         """
         Parse out syslog-ng stats messages to extract metrics and generate alerts if needed
@@ -327,19 +349,29 @@ Please disregard this message
                 if isinstance(metadata['FULLHOST_FROM'], bytes):
                     metadata['FULLHOST_FROM'] = metadata['FULLHOST_FROM'].decode("utf-8")
 
-
-                # Extract timestamp from event if available and set
-                if 'timestamp_regex' not in alert or 'timestamp_format' not in alert:
+                # Use received time as timestamp if needed
+                if 'timestamp_regex' not in alert:
                     metadata['alert_date'] = datetime.datetime.strptime(syslog_timestamp, "%Y-%m-%dT%H:%M:%S%z")
 
-                # Convert timestamp string to datetime if possible
+                # Extract timestamp from event if available and convert to datetime
                 else:
                     try:
+                        # Extract timestamp from message
                         raw_timestamp = alert['timestamp_regex'].search(message).group(1)
-                        metadata['alert_date'] = datetime.datetime.strptime(raw_timestamp, alert['timestamp_format'])
+
+                        # If the format of the timestamp has already been defined
+                        if not 'timestamp_format':
+                            # Convert the timestamp using the defined timestamp format
+                            metadata['alert_date'] = datetime.datetime.strptime(raw_timestamp, alert['timestamp_format'])
+                        else:
+                            # Convert string timezone to UTC hourly offset if possible
+                            raw_timestamp = self.tzconvert(raw_timestamp)
+                            # Convert to datetime format using dateutil
+                            metadata['alert_date'] = parser.parse(raw_timestamp)
+
                     except Exception as ex:
                         self.logger.debug("Invalid timestamp format in %s : %s", message, ex)
-                        metadata['alert_date'] = syslog_timestamp
+                        metadata['alert_date'] = datetime.datetime.strptime(syslog_timestamp, "%Y-%m-%dT%H:%M:%S%z")
                 
                 # Convert to unix timestamp from datetime
                 timestamp = int(metadata['alert_date'].timestamp())
@@ -393,6 +425,7 @@ Please disregard this message
                 return self.SUCCESS
 
         # No matching alert entry found
+        self.logger.debug("No matching alerts for %s", message)
         self.dropped = self.dropped + 1
         return self.SUCCESS
 
@@ -406,16 +439,17 @@ Please disregard this message
 
         # Check if newest timestamp is within an existing alarm window
         for alarm in new_event['alarms']:
-            if new_timestamp >= alarm - new_alert['time_span'] and new_timestamp <= alarm + new_alert['reset_time']:
+            if new_timestamp >= alarm - new_alert['time_span']:
+                if new_timestamp <= alarm + new_alert['reset_time']:
 
-                # This event falls within an existing alarm window
-                return new_event, False
+                    # This event falls within an existing alarm window
+                    return new_event, False
 
         # Events that should be alerted on for a single occurrence
         if new_alert['high_threshold'] == 1:
             #self.gen_alert(new_alert, new_event, metadata, new_timestamp, log)
             return new_event, True
-        
+
         # Events that should be alerted on for multiple occurrences
         else:
             # Add timestamp to list
@@ -657,7 +691,7 @@ Please disregard this message
                          event_counter, timestamp_counter, purged_events, alarm_count)
         return True
 
-class StatsParser(object):
+class StatsParser(syslogng.LogParser):
     """
     syslog-ng parser for handling internal statistics messages
     """
