@@ -20,6 +20,11 @@ import ssl
 import pickle
 import os
 from dateutil import parser
+from email import encoders
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email.mime.multipart import MIMEMultipart
+from email.utils import formatdate
 import syslogng
 
 class DedupAlerts(object):
@@ -31,17 +36,16 @@ class DedupAlerts(object):
         """
         Validate email connection parameters for sending alerts
         """
+        
+        message = MIMEMultipart()
 
-        # Test message
-        test_message = """From: %s
-To: %s
-Subject: Syslog-ng Dedup Alert Engine Initializing
-
-Please disregard this message
-""" % (self.sender, self.test_recipient)
+        message["From"] = self.test_recipient
+        message["To"] = self.sender
+        message["Subject"] = "Syslog-ng Dedup Alert Engine Initializing"
+        message.attach( MIMEText("Please disregard this message"))
 
         # Send test email to validate SMTP settings
-        if not self.email_alert(self.test_recipient, test_message):
+        if not self.email_alert(self.test_recipient, message):
             self.logger.error("Unable to send email")
             return False
 
@@ -349,18 +353,19 @@ Please disregard this message
                 if isinstance(metadata['FULLHOST_FROM'], bytes):
                     metadata['FULLHOST_FROM'] = metadata['FULLHOST_FROM'].decode("utf-8")
 
-                # Use received time as timestamp if needed
-                if 'timestamp_regex' not in alert:
-                    metadata['alert_date'] = datetime.datetime.strptime(syslog_timestamp, "%Y-%m-%dT%H:%M:%S%z")
+                # Use received time as default timestamp
+                metadata['alert_date'] = datetime.datetime.strptime(syslog_timestamp, "%Y-%m-%dT%H:%M:%S%z")
 
                 # Extract timestamp from event if available and convert to datetime
-                else:
-                    try:
-                        # Extract timestamp from message
-                        raw_timestamp = alert['timestamp_regex'].search(message).group(1)
+                raw_timestamp = ""
+                try:
+                    # Extract timestamp from message if possible
+                    timestamp_match = alert['timestamp_regex'].search(message)
+                    if timestamp_match:
+                        raw_timestamp = timestamp_match.group(1)
 
                         # If the format of the timestamp has already been defined
-                        if not 'timestamp_format':
+                        if alert['timestamp_format']:
                             # Convert the timestamp using the defined timestamp format
                             metadata['alert_date'] = datetime.datetime.strptime(raw_timestamp, alert['timestamp_format'])
                         else:
@@ -369,9 +374,9 @@ Please disregard this message
                             # Convert to datetime format using dateutil
                             metadata['alert_date'] = parser.parse(raw_timestamp)
 
-                    except Exception as ex:
-                        self.logger.debug("Invalid timestamp format in %s : %s", message, ex)
-                        metadata['alert_date'] = datetime.datetime.strptime(syslog_timestamp, "%Y-%m-%dT%H:%M:%S%z")
+                except Exception as ex:
+                    self.logger.debug("Invalid timestamp (%s) in %s : %s", raw_timestamp, message, ex)
+                    metadata['alert_date'] = datetime.datetime.strptime(syslog_timestamp, "%Y-%m-%dT%H:%M:%S%z")
                 
                 # Convert to unix timestamp from datetime
                 timestamp = int(metadata['alert_date'].timestamp())
@@ -507,25 +512,40 @@ Please disregard this message
         Generate an alert with the required template variable subsitution
         """
 
-        message = new_alert['template']
+        body = new_alert['template']
+
+        message = MIMEMultipart()
+        message["From"] = self.sender
+        message["To"] = new_alert['recipient']
 
         # Replace template variables
-        message = message.replace('$RECIPIENT', new_alert['recipient'])
-        message = message.replace('$PATTERN', new_alert['pattern'])
-        message = message.replace('$LOG_SOURCES', new_metadata['log_sources'])
-        message = message.replace('$USER', new_metadata['user'])
-        message = message.replace('$COMPUTER', new_metadata['computer'])
-        message = message.replace('$CUSTOM_FIELD', new_metadata['custom_field'])
-        message = message.replace('$ALERT_TIME', str(new_metadata['alert_date']))
-        message = message.replace('$HIGH_THRESHOLD', str(new_alert['high_threshold']))
-        message = message.replace('$TIME_SPAN', str(new_alert['time_span']))
-        message = message.replace('$RESET_TIME', str(new_alert['reset_time']))
-        message = message.replace('$NUM_EVENTS', str(new_event['num_events']))
-        message = message.replace('$LOGHOST', str(new_metadata['LOGHOST']))
-        message = message.replace('$SOURCEIP', str(new_metadata['SOURCEIP']))
-        message = message.replace('$FULLHOST', str(new_metadata['FULLHOST']))
-        message = message.replace('$FULLHOST_FROM', str(new_metadata['FULLHOST_FROM']))
-        message = message.replace('$LOG', new_log)
+        body = body.replace('$RECIPIENT', new_alert['recipient'])
+        body = body.replace('$PATTERN', new_alert['pattern'])
+        body = body.replace('$LOG_SOURCES', new_metadata['log_sources'])
+        body = body.replace('$USER', new_metadata['user'])
+        body = body.replace('$COMPUTER', new_metadata['computer'])
+        body = body.replace('$CUSTOM_FIELD', new_metadata['custom_field'])
+        body = body.replace('$ALERT_TIME', str(new_metadata['alert_date']))
+        body = body.replace('$HIGH_THRESHOLD', str(new_alert['high_threshold']))
+        body = body.replace('$TIME_SPAN', str(new_alert['time_span']))
+        body = body.replace('$RESET_TIME', str(new_alert['reset_time']))
+        body = body.replace('$NUM_EVENTS', str(new_event['num_events']))
+        body = body.replace('$LOGHOST', str(new_metadata['LOGHOST']))
+        body = body.replace('$SOURCEIP', str(new_metadata['SOURCEIP']))
+        body = body.replace('$FULLHOST', str(new_metadata['FULLHOST']))
+        body = body.replace('$FULLHOST_FROM', str(new_metadata['FULLHOST_FROM']))
+        body = body.replace('$LOG', new_log)
+
+        # Extract subject if it was part of template
+        match = re.search("^Subject:\s*(.+?)\n", body)
+        if match:
+            message["Subject"] = match.group(0)
+
+            # Delete subject from body
+            body = re.sub(r'^Subject:\s*(.+?)\n', '', body)
+        
+        # MIME convert and attach message body
+        message.attach(MIMEText(body))
 
         # Reset event counter
         new_event['num_events'] = 0
@@ -563,7 +583,7 @@ Please disregard this message
         Send a given message to the recipent
         """
 
-        self.logger.debug(f"Sending {len(message)} character email: {message}")
+        self.logger.debug(f"Sending {len(message)} character email: {message.as_string()}")
 
         # If no encryption should be used
         if not self.encryption:
@@ -574,7 +594,7 @@ Please disregard this message
                 if self.password and len(self.sender) > 0:
                     # Authenticate in cleartext
                     server.login(self.sender, self.password)
-                server.sendmail(from_addr=self.sender, to_addrs=recipient, msg=message)
+                server.sendmail(from_addr=self.sender, to_addrs=recipient, msg=message.as_string())
                 server.quit()
                 return True
             except Exception as e:
@@ -594,7 +614,7 @@ Please disregard this message
             try:
                 server = smtplib.SMTP_SSL(self.smtp_server, self.port, context=context)
                 server.login(self.sender, self.password)
-                server.sendmail(from_addr=self.sender, to_addrs=recipient, msg=message)
+                server.sendmail(from_addr=self.sender, to_addrs=recipient, msg=message.as_string())
                 server.quit()
                 return True
             except Exception as e:
@@ -610,7 +630,7 @@ Please disregard this message
                 server = smtplib.SMTP(self.smtp_server, self.port, context)
                 server.starttls(context=context)
                 server.login(self.sender, self.password)
-                server.sendmail(from_addr=self.sender, to_addrs=recipient, msg=message)
+                server.sendmail(from_addr=self.sender, to_addrs=recipient, msg=message.as_string())
                 server.quit()
                 return True
             except Exception as ex:
