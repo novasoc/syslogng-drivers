@@ -583,7 +583,10 @@ class DedupAlerts(object):
         Send a given message to the recipent
         """
 
-        self.logger.debug(f"Sending {len(message)} character email: {message.as_string()}")
+        # Convert comma separated string to list
+        recipients = recipient.split(',')
+
+        self.logger.debug(f"Sending {len(message)} character email to {recipient}: {message.as_string()}")
 
         # If no encryption should be used
         if not self.encryption:
@@ -594,7 +597,7 @@ class DedupAlerts(object):
                 if self.password and len(self.sender) > 0:
                     # Authenticate in cleartext
                     server.login(self.sender, self.password)
-                server.sendmail(from_addr=self.sender, to_addrs=recipient, msg=message.as_string())
+                server.sendmail(from_addr=self.sender, to_addrs=recipients, msg=message.as_string())
                 server.quit()
                 return True
             except Exception as e:
@@ -614,7 +617,7 @@ class DedupAlerts(object):
             try:
                 server = smtplib.SMTP_SSL(self.smtp_server, self.port, context=context)
                 server.login(self.sender, self.password)
-                server.sendmail(from_addr=self.sender, to_addrs=recipient, msg=message.as_string())
+                server.sendmail(from_addr=self.sender, to_addrs=recipients, msg=message.as_string())
                 server.quit()
                 return True
             except Exception as e:
@@ -630,7 +633,7 @@ class DedupAlerts(object):
                 server = smtplib.SMTP(self.smtp_server, self.port, context)
                 server.starttls(context=context)
                 server.login(self.sender, self.password)
-                server.sendmail(from_addr=self.sender, to_addrs=recipient, msg=message.as_string())
+                server.sendmail(from_addr=self.sender, to_addrs=recipients, msg=message.as_string())
                 server.quit()
                 return True
             except Exception as ex:

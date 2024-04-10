@@ -180,7 +180,7 @@ The file specified for the alerts_ini configuration includes a number of options
 
 name - Each configuration must have a unique name (mandatory)
 pattern - The regex to be used against a log message to check if it matches this configuration. Whitespace is interpreted as a logical AND for the regex (mandatory)
-recipient - The email recipient when an alert is triggered (mandatory)
+recipient - The email recipient(s) when an alert is triggered. Multiple email addresses must be separated by a comma (mandatory)
 keys - A comma separated list of extracted variable(s) that are used to uniquely identify an event for dedup purposes
 template - The email template to be used when an alert is triggered including variable substitutions (mandatory)
 high_threshold - The number of events at which an alert should be triggered (default is 1)
@@ -237,7 +237,7 @@ Referece configuration stanzas (of which there can be multiple in the alerts_ini
 
     [Cisco_IOS_EIGRP_Peer_Graceful_Restart]
     Pattern=EIGRP.+?Peer\s+graceful-restart
-    Recipient=netops@company.com
+    Recipient=netops@company.com,secops@company.com
     Timestamp=:\s+(\w\w\w\s+\d+\s+\d+:\d+:\d+\.\d+\s+.+?):
     Keys=SOURCEIP
     High_Threshold=1
